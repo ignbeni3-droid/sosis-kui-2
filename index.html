@@ -1,0 +1,1752 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { ShoppingCart, Eye, EyeOff, Package, TrendingUp, LogOut, MessageCircle, Check, Trash2, Clock, AlertTriangle, Plus, Minus, BarChart3, Phone, Star, Download, CreditCard, Banknote, Edit3, Save } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, getDoc } from 'firebase/firestore';
+
+// --- FIREBASE SETUP ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'sosis-kui-app';
+
+// --- CONSTANTS & DATA ---
+const PUBLIC_PATH = `artifacts/${appId}/public/data`;
+const LOGO_MAIN = "https://github.com/ignbeni3-droid/ben/blob/main/Sosis_KUI-removebg.png?raw=true";
+const LOGO_MBD = "https://github.com/ignbeni3-droid/ben/blob/main/mbd-removebg-preview.png?raw=true"; 
+const LOGO_ISTTS = "https://github.com/ignbeni3-droid/ben/blob/main/istts-removebg-preview.png?raw=true";
+const QRIS_IMG = "https://github.com/ignbeni3-droid/ben/blob/main/QR%20CODE%20SOSIS%20KUI.jpeg?raw=true";
+
+const INITIAL_PRODUCTS = [
+  { id: 'p1', name: 'Cireng (Isi 4pcs)', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/cireng.jpeg?raw=true' },
+  { id: 'p2', name: 'Sosis', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/sosis%20goreng-ezremove.png?raw=true' },
+  { id: 'p3', name: 'Scallop', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/scallop%20goreng-ezremove.jpeg?raw=true' },
+  { id: 'p4', name: 'Sosis Mie', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/sosis%20mie%20goreng-ezremove.png?raw=true' },
+  { id: 'p5', name: 'Nugget Love', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/nugget%20love%20goreng-ezremove.png?raw=true' },
+  { id: 'p6', name: 'Cilor', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/cilor%20goreng-ezremove.png?raw=true' },
+  { id: 'p7', name: 'Bintang', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/bintang%20goreng-ezremove.png?raw=true' },
+  { id: 'p8', name: 'Tempura', price: 1000, stock: 50, image: 'https://github.com/ignbeni3-droid/ben/blob/main/tempura%20goreng-ezremove.png?raw=true' },
+];
+
+const BUMBU_OPTIONS = ['Balado', 'Keju', 'Barbecue', 'Sapi'];
+
+export default function App() {
+  // Global State
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState(null); // 'buyer' or 'seller'
+  const [buyerInfo, setBuyerInfo] = useState({ name: '', phone: '' });
+  const [notification, setNotification] = useState(null);
+  
+  // Data State
+  const [products, setProducts] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [recaps, setRecaps] = useState([]);
+  
+  // UI State
+  const [view, setView] = useState('login'); 
+  const [cart, setCart] = useState([]);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+
+  // Quick Login State
+  const [savedProfile, setSavedProfile] = useState(null);
+  const [hasLoggedOut, setHasLoggedOut] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  // --- NOTIFICATION HELPER ---
+  const showNotif = (msg, type = 'success') => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  // --- FIREBASE INIT & LISTENERS ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error:", err);
+      }
+    };
+    initAuth();
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setIsAuthLoading(false);
+      return;
+    }
+
+    const loadProfile = async () => {
+      try {
+        const profileSnap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'));
+        if (profileSnap.exists()) {
+          const data = profileSnap.data();
+          setSavedProfile(data);
+          
+          if (!hasLoggedOut && !role) {
+            if (data.role === 'buyer') {
+              setBuyerInfo({ name: data.name, phone: data.phone });
+              setRole('buyer');
+              setView('buyer-home');
+            } else if (data.role === 'seller') {
+              setRole('seller');
+              setView('seller-orders');
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error loading profile", err);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    };
+
+    loadProfile();
+
+    const unsubProducts = onSnapshot(collection(db, PUBLIC_PATH, 'products'), (snap) => {
+      const prods = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (prods.length === 0) {
+        INITIAL_PRODUCTS.forEach(p => { setDoc(doc(db, PUBLIC_PATH, 'products', p.id), p); });
+      } else {
+        // Mengurutkan produk berdasarkan ID agar posisinya tidak teracak saat stok di-update
+        setProducts(prods.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })));
+      }
+    }, (err) => console.error(err));
+
+    const unsubOrders = onSnapshot(collection(db, PUBLIC_PATH, 'orders'), (snap) => {
+      const ords = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
+      setOrders(ords);
+    }, (err) => console.error(err));
+
+    const unsubReviews = onSnapshot(collection(db, PUBLIC_PATH, 'reviews'), (snap) => {
+      const revs = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
+      setReviews(revs);
+    }, (err) => console.error(err));
+
+    const unsubRecaps = onSnapshot(collection(db, PUBLIC_PATH, 'recaps'), (snap) => {
+      const rcps = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
+      setRecaps(rcps);
+    }, (err) => console.error(err));
+
+    return () => { unsubProducts(); unsubOrders(); unsubReviews(); unsubRecaps(); };
+  }, [user, hasLoggedOut, role]);
+
+  // Handle low stock notifications for seller
+  useEffect(() => {
+    if (role === 'seller') {
+      const lowStockItems = products.filter(p => p.stock < 5 && p.stock > 0);
+      const emptyStockItems = products.filter(p => p.stock === 0);
+      
+      if (emptyStockItems.length > 0) {
+        showNotif(`Peringatan: Stok ${emptyStockItems.map(p=>p.name).join(', ')} HABIS!`, 'error');
+      } else if (lowStockItems.length > 0) {
+        showNotif(`Info: Stok ${lowStockItems.map(p=>p.name).join(', ')} menipis.`, 'warning');
+      }
+    }
+  }, [products, role]);
+
+  // --- AUTHENTICATION ---
+  const handleLoginBuyer = async (name, phone) => {
+    if (!name || !phone) return showNotif('Nama dan WA harus diisi', 'error');
+    setBuyerInfo({ name, phone });
+    setRole('buyer');
+    setView('buyer-home');
+    setHasLoggedOut(false);
+    
+    if (user) {
+      const profileData = { role: 'buyer', name, phone };
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), profileData);
+      setSavedProfile(profileData);
+    }
+    showNotif('Berhasil masuk sebagai Pembeli');
+  };
+
+  const handleLoginSeller = async () => {
+    setRole('seller');
+    setView('seller-orders');
+    setHasLoggedOut(false);
+    
+    if (user) {
+      const profileData = { role: 'seller' };
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'), profileData);
+      setSavedProfile(profileData);
+    }
+    showNotif('Berhasil masuk Portal Penjual');
+  };
+
+  const handleLogout = () => {
+    setRole(null);
+    setBuyerInfo({ name: '', phone: '' });
+    setView('login');
+    setCart([]);
+    setHasLoggedOut(true);
+  };
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-pink-100 via-orange-50 to-yellow-100 flex items-center justify-center">
+        <div className="animate-pulse flex flex-col items-center">
+          <img src={LOGO_MAIN} alt="Loading" className="h-28 mb-4 drop-shadow-lg opacity-80" />
+          <div className="font-bold text-xl text-orange-600">Memuat Sosis KUI...</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-pink-100 via-orange-50 to-yellow-100 font-sans text-gray-800">
+      {notification && (
+        <div className="fixed top-5 left-1/2 transform -translate-x-1/2 z-[100] animate-fade-in-down">
+          <div className={`px-6 py-3 rounded-full shadow-lg font-bold text-white flex items-center gap-2 border-2 border-white/20 ${
+            notification.type === 'error' ? 'bg-red-500' : 
+            notification.type === 'warning' ? 'bg-orange-500' : 'bg-green-500'
+          }`}>
+            {notification.type === 'success' && <Check size={18} />}
+            {notification.type === 'error' && <AlertTriangle size={18} />}
+            {notification.msg}
+          </div>
+        </div>
+      )}
+
+      {!role && <LoginScreen onLoginBuyer={handleLoginBuyer} onLoginSeller={handleLoginSeller} savedProfile={savedProfile} />}
+      
+      {role === 'buyer' && (
+        <BuyerPortal 
+          products={products} 
+          orders={orders} 
+          reviews={reviews}
+          buyerInfo={buyerInfo}
+          cart={cart}
+          setCart={setCart}
+          isCartOpen={isCartOpen}
+          setIsCartOpen={setIsCartOpen}
+          onLogout={handleLogout}
+          showNotif={showNotif}
+          db={db}
+        />
+      )}
+
+      {role === 'seller' && (
+        <SellerPortal 
+          products={products}
+          orders={orders}
+          reviews={reviews}
+          recaps={recaps}
+          view={view}
+          setView={setView}
+          onLogout={handleLogout}
+          showNotif={showNotif}
+        />
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// LOGIN SCREEN
+// ==========================================
+function LoginScreen({ onLoginBuyer, onLoginSeller, savedProfile }) {
+  const [tab, setTab] = useState(savedProfile?.role === 'seller' ? 'seller' : 'buyer');
+  const [showQuickLogin, setShowQuickLogin] = useState(true);
+  
+  // Buyer Form
+  const [bName, setBName] = useState('');
+  const [bPhone, setBPhone] = useState('');
+  
+  // Seller Form
+  const [sUser, setSUser] = useState('');
+  const [sPass, setSPass] = useState('');
+  const [showPass, setShowPass] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleBuyerSubmit = (e) => {
+    if(e) e.preventDefault();
+    onLoginBuyer(bName, bPhone);
+  };
+
+  const handleSellerSubmit = (e) => {
+    if(e) e.preventDefault();
+    if (sUser === 'adminkui' && sPass === 'ggkui26') {
+      onLoginSeller();
+    } else {
+      setError('Username atau Password salah!');
+    }
+  };
+
+  const handleKeyDown = (e, formType) => {
+    if (e.key === 'Enter') {
+      formType === 'buyer' ? handleBuyerSubmit() : handleSellerSubmit();
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-4">
+      <div className="bg-white/90 backdrop-blur-md p-8 rounded-3xl shadow-xl w-full max-w-sm border border-orange-100 relative z-10">
+        <div className="flex justify-center mb-6">
+          <img src={LOGO_MAIN} alt="Sosis KUI Logo" className="h-32 object-contain drop-shadow-md" />
+        </div>
+        
+        <h2 className="text-2xl font-bold text-center text-orange-600 mb-6">Selamat Datang di Sosis KUI</h2>
+        
+        <div className="flex rounded-full bg-orange-100 p-1 mb-8">
+          <button 
+            className={`flex-1 py-2 rounded-full font-semibold transition-all ${tab === 'buyer' ? 'bg-orange-500 text-white shadow-md' : 'text-orange-700 hover:bg-orange-200'}`}
+            onClick={() => setTab('buyer')}
+          >
+            Pembeli
+          </button>
+          <button 
+            className={`flex-1 py-2 rounded-full font-semibold transition-all ${tab === 'seller' ? 'bg-orange-500 text-white shadow-md' : 'text-orange-700 hover:bg-orange-200'}`}
+            onClick={() => setTab('seller')}
+          >
+            Penjual
+          </button>
+        </div>
+
+        {tab === 'buyer' ? (
+          (showQuickLogin && savedProfile?.role === 'buyer') ? (
+            <div className="space-y-4 animate-fade-in text-center">
+              <div className="bg-orange-50 p-5 rounded-2xl border border-orange-100 mb-6 shadow-inner">
+                <p className="text-gray-500 text-sm font-medium mb-1">Masuk kembali sebagai:</p>
+                <h3 className="text-2xl font-black text-gray-800">{savedProfile.name}</h3>
+                <p className="text-sm font-bold text-orange-600">{savedProfile.phone}</p>
+              </div>
+              <button 
+                onClick={() => onLoginBuyer(savedProfile.name, savedProfile.phone)}
+                className="w-full bg-gradient-to-r from-orange-400 to-pink-500 text-white font-bold py-4 rounded-xl shadow-lg hover:opacity-90 transition-all active:scale-[0.98]"
+              >
+                Lanjutkan
+              </button>
+              <button 
+                onClick={() => setShowQuickLogin(false)}
+                className="w-full bg-white text-gray-500 font-bold py-4 rounded-xl border-2 border-gray-200 hover:bg-gray-50 transition-colors"
+              >
+                Gunakan Akun Lain
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4 animate-fade-in">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Nama Lengkap</label>
+                <input 
+                  type="text" 
+                  value={bName} onChange={e => setBName(e.target.value)}
+                  onKeyDown={(e) => handleKeyDown(e, 'buyer')}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-orange-400 focus:ring-0 outline-none transition-colors"
+                  placeholder="Masukkan nama Anda"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">No. WhatsApp</label>
+                <input 
+                  type="tel" 
+                  value={bPhone} onChange={e => setBPhone(e.target.value.replace(/\D/g, ''))}
+                  onKeyDown={(e) => handleKeyDown(e, 'buyer')}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-orange-400 focus:ring-0 outline-none transition-colors"
+                  placeholder="Contoh: 08123456789"
+                />
+              </div>
+              <button 
+                onClick={handleBuyerSubmit}
+                className="w-full bg-gradient-to-r from-orange-400 to-pink-500 text-white font-bold py-3.5 rounded-xl mt-4 shadow-lg hover:opacity-90 transition-opacity active:scale-[0.98]"
+              >
+                Mulai Pesan
+              </button>
+            </div>
+          )
+        ) : (
+          (showQuickLogin && savedProfile?.role === 'seller') ? (
+            <div className="space-y-4 animate-fade-in text-center">
+              <div className="bg-pink-50 p-5 rounded-2xl border border-pink-100 mb-6 shadow-inner">
+                <p className="text-gray-500 text-sm font-medium mb-1">Masuk kembali sebagai:</p>
+                <h3 className="text-2xl font-black text-gray-800">Admin Sosis KUI</h3>
+              </div>
+              <button 
+                onClick={() => onLoginSeller()}
+                className="w-full bg-gradient-to-r from-pink-500 to-orange-500 text-white font-bold py-4 rounded-xl shadow-lg hover:opacity-90 transition-all active:scale-[0.98]"
+              >
+                Lanjutkan ke Portal
+              </button>
+              <button 
+                onClick={() => setShowQuickLogin(false)}
+                className="w-full bg-white text-gray-500 font-bold py-4 rounded-xl border-2 border-gray-200 hover:bg-gray-50 transition-colors"
+              >
+                Gunakan Akun Lain
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4 animate-fade-in">
+              {error && <p className="text-red-500 text-sm font-bold text-center bg-red-50 py-2 rounded-lg">{error}</p>}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Username</label>
+                <input 
+                  type="text" 
+                  value={sUser} onChange={e => setSUser(e.target.value)}
+                  onKeyDown={(e) => handleKeyDown(e, 'seller')}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-pink-400 focus:ring-0 outline-none transition-colors"
+                />
+              </div>
+              <div className="relative">
+                <label className="block text-sm font-bold text-gray-700 mb-1">Password</label>
+                <input 
+                  type={showPass ? "text" : "password"} 
+                  value={sPass} onChange={e => setSPass(e.target.value)}
+                  onKeyDown={(e) => handleKeyDown(e, 'seller')}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 focus:border-pink-400 focus:ring-0 outline-none transition-colors pr-12"
+                />
+                <button 
+                  type="button"
+                  onClick={() => setShowPass(!showPass)}
+                  className="absolute right-3 top-9 text-gray-400 hover:text-gray-600 p-1"
+                >
+                  {showPass ? <EyeOff size={20} /> : <Eye size={20} />}
+                </button>
+              </div>
+              <button 
+                onClick={handleSellerSubmit}
+                className="w-full bg-gradient-to-r from-pink-500 to-orange-500 text-white font-bold py-3.5 rounded-xl mt-4 shadow-lg hover:opacity-90 transition-opacity active:scale-[0.98]"
+              >
+                Masuk Portal Penjual
+              </button>
+            </div>
+          )
+        )}
+      </div>
+
+      {/* FOOTER LOGIN */}
+      <div className="mt-8 text-center flex flex-col items-center z-10">
+        <h4 className="text-gray-500 font-bold text-sm tracking-widest mb-3 uppercase">DIDUKUNG OLEH:</h4>
+        <div className="flex gap-4 mb-6">
+          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow p-1 border border-gray-100">
+            <img src={LOGO_ISTTS} alt="ISTTS" className="w-full h-full object-contain" />
+          </div>
+          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow p-1 border border-gray-100">
+            <img src={LOGO_MBD} alt="MBD" className="w-full h-full object-contain" />
+          </div>
+        </div>
+        
+        <h4 className="text-gray-500 font-medium text-sm mb-2">Hubungi Kami:</h4>
+        <div className="flex gap-4 text-[#128C7E] font-bold mb-6">
+          <a href="https://api.whatsapp.com/send?phone=6285102203195" target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:opacity-80 transition-opacity">
+            <MessageCircle size={18}/> Benjiro
+          </a>
+          <a href="https://api.whatsapp.com/send?phone=6281387658835" target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:opacity-80 transition-opacity">
+            <MessageCircle size={18}/> Echa
+          </a>
+        </div>
+
+        <p className="text-gray-400 text-xs font-medium">© 2026 Sosis KUI – Hak Cipta Dilindungi</p>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// BUYER PORTAL
+// ==========================================
+function BuyerPortal({ products, orders, reviews, buyerInfo, cart, setCart, isCartOpen, setIsCartOpen, onLogout, showNotif, db }) {
+  
+  const [paymentMethod, setPaymentMethod] = useState('cod');
+  const [catatanPesanan, setCatatanPesanan] = useState('');
+  const [showQrZoom, setShowQrZoom] = useState(false);
+  const [orderBumbu, setOrderBumbu] = useState([]); 
+  
+  const [ratingVal, setRatingVal] = useState(0);
+  const [ratingDesc, setRatingDesc] = useState('');
+  const [isAnonRating, setIsAnonRating] = useState(false);
+  const [editingReviewId, setEditingReviewId] = useState(null);
+  const [deleteMyReviewModal, setDeleteMyReviewModal] = useState({ isOpen: false, reviewId: null });
+
+  const myOrders = useMemo(() => {
+    return orders.filter(o => o.buyerPhone === buyerInfo.phone);
+  }, [orders, buyerInfo.phone]);
+
+  const handleAddToCart = (product) => {
+    if (product.stock <= 0) return showNotif('Maaf, stok habis!', 'error');
+
+    setCart(prev => {
+      const existingIdx = prev.findIndex(item => item.id === product.id);
+      
+      if (existingIdx >= 0) {
+        const currentTotalQty = prev[existingIdx].qty;
+        if (currentTotalQty >= product.stock) {
+          showNotif(`Stok maksimal ${product.name} tercapai`, 'warning');
+          return prev;
+        }
+        return prev.map((item, idx) => 
+          idx === existingIdx ? { ...item, qty: item.qty + 1 } : item
+        );
+      }
+
+      return [...prev, {
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        image: product.image,
+        qty: 1
+      }];
+    });
+
+    showNotif(`${product.name} masuk ke keranjang`);
+  };
+
+  const removeFromCart = (id) => {
+    setCart(prev => prev.filter(item => item.id !== id));
+  };
+
+  const updateCartQty = (id, delta) => {
+    setCart(prev => prev.map(item => {
+      if (item.id === id) {
+        const prod = products.find(p => p.id === item.id);
+        const newQty = item.qty + delta;
+        
+        if (newQty > 0 && newQty <= (prod?.stock || 0)) {
+          return { ...item, qty: newQty };
+        } else if (newQty > (prod?.stock || 0)) {
+          showNotif(`Stok maksimal tersisa untuk ${prod.name}`, 'warning');
+        }
+      }
+      return item;
+    }));
+  };
+
+  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+  const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
+
+  const handleCheckout = async () => {
+    if (cart.length === 0) return;
+    
+    const newOrder = {
+      id: `ORD-${Date.now()}`,
+      buyerName: buyerInfo.name,
+      buyerPhone: buyerInfo.phone,
+      items: cart.map(item => ({ 
+        id: item.id, 
+        name: item.name, 
+        qty: item.qty, 
+        price: item.price
+      })),
+      bumbu: orderBumbu,
+      total: cartTotal,
+      paymentMethod: paymentMethod,
+      catatan: catatanPesanan,
+      status: 'Menunggu',
+      estimatedTime: 0,
+      timestamp: Date.now()
+    };
+
+    try {
+      await setDoc(doc(db, PUBLIC_PATH, 'orders', newOrder.id), newOrder);
+      
+      for (const item of cart) {
+        const prod = products.find(p => p.id === item.id);
+        if (prod) {
+          await updateDoc(doc(db, PUBLIC_PATH, 'products', item.id), {
+            stock: prod.stock - item.qty
+          });
+        }
+      }
+
+      setCart([]);
+      setCatatanPesanan('');
+      setOrderBumbu([]);
+      setIsCartOpen(false);
+      showNotif('Pesanan berhasil dibuat! Silakan pantau status Anda.', 'success');
+    } catch (error) {
+      console.error("Gagal saat checkout:", error);
+      showNotif('Gagal membuat pesanan, silakan coba lagi.', 'error');
+    }
+  };
+
+  const submitReview = async () => {
+    if (ratingVal === 0) return showNotif('Silakan pilih jumlah bintang', 'warning');
+    if (!ratingDesc.trim()) return showNotif('Deskripsi tidak boleh kosong', 'warning');
+
+    try {
+      if (editingReviewId) {
+        await updateDoc(doc(db, PUBLIC_PATH, 'reviews', editingReviewId), {
+          buyerName: isAnonRating ? 'Anonim' : buyerInfo.name,
+          rating: ratingVal,
+          description: ratingDesc,
+        });
+        showNotif('Ulasan berhasil diperbarui!', 'success');
+      } else {
+        await setDoc(doc(db, PUBLIC_PATH, 'reviews', Date.now().toString()), {
+          buyerName: isAnonRating ? 'Anonim' : buyerInfo.name,
+          buyerPhone: buyerInfo.phone,
+          rating: ratingVal,
+          description: ratingDesc,
+          timestamp: Date.now()
+        });
+        showNotif('Terima kasih atas ulasan Anda!', 'success');
+      }
+      setRatingVal(0);
+      setRatingDesc('');
+      setIsAnonRating(false);
+      setEditingReviewId(null);
+    } catch (err) {
+      showNotif('Gagal mengirim ulasan', 'error');
+    }
+  };
+
+  const cancelEditReview = () => {
+    setRatingVal(0);
+    setRatingDesc('');
+    setIsAnonRating(false);
+    setEditingReviewId(null);
+  };
+
+  const confirmDeleteMyReview = async () => {
+    if (!deleteMyReviewModal.reviewId) return;
+    try {
+      await deleteDoc(doc(db, PUBLIC_PATH, 'reviews', deleteMyReviewModal.reviewId));
+      showNotif('Ulasan Anda berhasil dihapus', 'success');
+      setDeleteMyReviewModal({ isOpen: false, reviewId: null });
+      if (editingReviewId === deleteMyReviewModal.reviewId) {
+        cancelEditReview();
+      }
+    } catch (err) {
+      showNotif('Gagal menghapus ulasan', 'error');
+    }
+  };
+
+  const formatWaLink = (phone) => {
+    let formatted = phone.replace(/\D/g, '');
+    if (formatted.startsWith('0')) formatted = '62' + formatted.slice(1);
+    return `https://api.whatsapp.com/send?phone=${formatted}`; 
+  };
+
+  return (
+    <div className="pb-32 relative">
+      <header className="bg-white/95 backdrop-blur-md shadow-sm sticky top-0 z-40 border-b border-orange-100">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <img src={LOGO_MAIN} alt="Logo" className="h-10 drop-shadow-sm" />
+            <div className="flex flex-col">
+              <span className="font-black text-[10px] text-orange-500 leading-none mb-0.5 tracking-wide">SOSIS KUI</span>
+              <span className="font-bold text-orange-700 leading-none hidden sm:block">Hai, {buyerInfo.name.split(' ')[0]}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <button onClick={onLogout} className="flex items-center gap-2 p-2 px-4 text-red-500 hover:text-red-600 font-bold transition-colors bg-red-50 hover:bg-red-100 rounded-full cursor-pointer" title="Keluar">
+              <LogOut size={20} /> <span className="hidden sm:inline">Keluar</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-8 space-y-12">
+        {myOrders.length > 0 && (
+          <section>
+            <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <Clock className="text-orange-500" /> Tracking Pesanan
+            </h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {myOrders.filter(o => o.status !== 'Dihapus').map(order => (
+                <div key={order.id} className="bg-white p-5 rounded-2xl shadow-sm border-l-4 border-orange-400 flex flex-col hover:shadow-md transition-shadow">
+                  <div className="flex justify-between items-start border-b border-gray-100 pb-3 mb-3">
+                    <div>
+                      <span className="text-xs text-gray-500 bg-gray-50 px-2 py-1 rounded">ID: {order.id.split('-')[1]}</span>
+                      <h3 className="font-bold text-gray-800 mt-2 flex items-center gap-2">
+                        Status: 
+                        <span className={`px-2.5 py-0.5 rounded-full text-xs text-white shadow-sm ${
+                          order.status === 'Menunggu' ? 'bg-yellow-500' :
+                          order.status === 'Diproses' ? 'bg-blue-500' : 'bg-green-500'
+                        }`}>
+                          {order.status}
+                        </span>
+                      </h3>
+                    </div>
+                  </div>
+                  <div className="flex-1 text-sm text-gray-600 mb-4 space-y-2">
+                    {order.items.map((it, idx) => (
+                      <div key={idx} className="flex justify-between border-b border-gray-50 last:border-0 pb-1.5">
+                        <span className="font-bold text-gray-700">- {it.qty}x {it.name}</span>
+                      </div>
+                    ))}
+                    <div className="pt-2">
+                      <span className="text-xs font-bold text-gray-500">Bumbu Pesanan: </span>
+                      {order.bumbu && order.bumbu.length > 0 ? (
+                        <span className="text-xs text-orange-600 font-bold bg-orange-50 px-2 py-0.5 rounded-md inline-block mt-1">{order.bumbu.join(', ')}</span>
+                      ) : (
+                        <span className="text-xs text-gray-500 font-medium bg-gray-100 px-2 py-0.5 rounded-md inline-block mt-1">Tanpa Bumbu</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-end mt-auto pt-3 border-t border-gray-100">
+                    <div>
+                       <div className="font-black text-lg text-orange-600">Rp {order.total.toLocaleString('id-ID')}</div>
+                       <div className="text-xs text-gray-500 mt-0.5">{order.paymentMethod === 'qris' ? 'QRIS' : 'Bayar di Tempat'}</div>
+                    </div>
+                    {order.status === 'Diproses' && order.estimatedTime > 0 && (
+                      <div className="text-xs font-bold bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm border border-blue-100">
+                        <Clock size={14}/> Selesai ± {order.estimatedTime} mnt
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
+          <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+            <Package className="text-orange-500"/> Menu Pilihan
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            {products.map(product => (
+              <div key={product.id} className="bg-white rounded-2xl p-3 sm:p-4 shadow-sm border border-orange-100/50 flex flex-col hover:shadow-md transition-all duration-300 relative group overflow-hidden">
+                <div className="w-full aspect-square mb-3 rounded-xl overflow-hidden flex items-center justify-center bg-gray-50 border border-gray-100 group-hover:scale-[1.02] transition-transform">
+                  <img src={product.image} alt={product.name} className="w-full h-full object-cover" onError={(e) => {e.target.style.display='none'}} />
+                </div>
+                <h3 className="font-bold text-gray-800 mb-1 text-sm sm:text-base leading-tight flex-1 text-center">{product.name}</h3>
+                <p className="text-orange-600 font-black mb-3 text-center">Rp {product.price.toLocaleString('id-ID')}</p>
+                <div className="w-full flex justify-between items-center mt-auto">
+                  <span className={`text-[10px] sm:text-xs font-bold px-2 py-1 rounded-md shadow-sm ${product.stock > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    Sisa: {product.stock}
+                  </span>
+                  <button 
+                    onClick={() => handleAddToCart(product)}
+                    disabled={product.stock <= 0}
+                    className="bg-gradient-to-r from-orange-400 to-pink-500 text-white p-2 rounded-xl shadow-md hover:shadow-lg disabled:opacity-50 disabled:shadow-none transition-all active:scale-95 cursor-pointer"
+                  >
+                    <Plus size={18} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="bg-white p-6 rounded-3xl shadow-sm border border-orange-100">
+          <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+            <Star className="text-orange-500 fill-orange-500"/> Penilaian Pelanggan
+          </h2>
+          
+          <div id="review-form" className="bg-orange-50/50 p-5 rounded-2xl border border-orange-100 mb-8 transition-all">
+            <h3 className="font-bold text-gray-700 mb-3 text-sm">{editingReviewId ? 'Edit Ulasan Anda' : 'Berikan Ulasan Anda'}</h3>
+            <div className="flex gap-2 mb-4">
+              {[1,2,3,4,5].map(star => (
+                <button 
+                  key={star} 
+                  onClick={() => setRatingVal(star)}
+                  className="cursor-pointer transition-transform hover:scale-110 focus:outline-none"
+                >
+                  <Star size={28} className={star <= ratingVal ? "text-orange-500 fill-orange-500" : "text-gray-300"} />
+                </button>
+              ))}
+            </div>
+            <textarea 
+              className="w-full border-2 border-white focus:border-orange-300 rounded-xl p-3 mb-3 outline-none text-sm shadow-sm"
+              rows="3"
+              placeholder="Ceritakan pengalaman Anda membeli Sosis KUI..."
+              value={ratingDesc}
+              onChange={e => setRatingDesc(e.target.value)}
+            ></textarea>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-gray-600 font-medium">
+                <input type="checkbox" checked={isAnonRating} onChange={e => setIsAnonRating(e.target.checked)} className="w-4 h-4 text-orange-500 rounded focus:ring-orange-400" />
+                Sembunyikan nama saya (Anonim)
+              </label>
+              <div className="flex w-full sm:w-auto gap-2">
+                {editingReviewId && (
+                  <button onClick={cancelEditReview} className="bg-gray-200 text-gray-600 font-bold px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors shadow-md flex-1 sm:flex-none cursor-pointer">
+                    Batal
+                  </button>
+                )}
+                <button onClick={submitReview} className="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl hover:bg-orange-600 transition-colors shadow-md w-full sm:w-auto cursor-pointer">
+                  {editingReviewId ? 'Update Ulasan' : 'Kirim Ulasan'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+            {reviews.length === 0 ? (
+              <p className="text-center text-gray-400 py-4 italic text-sm">Belum ada ulasan, jadilah yang pertama!</p>
+            ) : (
+              reviews.map(rev => (
+                <div key={rev.id} className="border-b border-gray-100 last:border-0 pb-4 group">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="flex">
+                      {[1,2,3,4,5].map(star => (
+                        <Star key={star} size={14} className={star <= rev.rating ? "text-orange-500 fill-orange-500" : "text-gray-200"} />
+                      ))}
+                    </div>
+                    <span className="font-bold text-sm text-gray-800 ml-2">{rev.buyerName}</span>
+                    <span className="text-xs text-gray-400 ml-auto">{new Date(rev.timestamp).toLocaleDateString('id-ID')}</span>
+                    
+                    {rev.buyerPhone === buyerInfo.phone && (
+                      <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity ml-2">
+                        <button 
+                          onClick={() => {
+                            setRatingVal(rev.rating);
+                            setRatingDesc(rev.description);
+                            setIsAnonRating(rev.buyerName === 'Anonim');
+                            setEditingReviewId(rev.id);
+                            document.getElementById('review-form')?.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                          className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+                          title="Edit Ulasan"
+                        >
+                          <Edit3 size={14} />
+                        </button>
+                        <button 
+                          onClick={() => setDeleteMyReviewModal({ isOpen: true, reviewId: rev.id })}
+                          className="text-red-500 hover:text-red-700 bg-red-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+                          title="Hapus Ulasan"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-gray-600 text-sm">{rev.description}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </main>
+
+      <footer className="bg-white border-t border-orange-200 py-10 mb-10">
+        <div className="max-w-4xl mx-auto px-4 flex flex-col items-center text-center">
+          <h4 className="text-gray-500 font-bold text-sm tracking-widest mb-4 uppercase">DIDUKUNG OLEH:</h4>
+          <div className="flex items-center gap-6 justify-center mb-8">
+            <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm p-2 border border-gray-100">
+              <img src={LOGO_ISTTS} alt="ISTTS Logo" className="w-full h-full object-contain" />
+            </div>
+            <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm p-2 border border-gray-100">
+              <img src={LOGO_MBD} alt="MBD Logo" className="w-full h-full object-contain" />
+            </div>
+          </div>
+
+          <h4 className="text-gray-500 font-medium text-sm mb-3">Hubungi Kami:</h4>
+          <div className="flex flex-col sm:flex-row gap-4 mb-8">
+            <a href={formatWaLink('085102203195')} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[#25D366]/10 text-[#128C7E] font-bold px-6 py-3 rounded-full hover:bg-[#25D366]/20 transition border border-[#25D366]/30 shadow-sm cursor-pointer">
+              <MessageCircle size={20} /> Benjiro
+            </a>
+            <a href={formatWaLink('081387658835')} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[#25D366]/10 text-[#128C7E] font-bold px-6 py-3 rounded-full hover:bg-[#25D366]/20 transition border border-[#25D366]/30 shadow-sm cursor-pointer">
+              <MessageCircle size={20} /> Echa
+            </a>
+          </div>
+          
+          <p className="text-gray-400 text-xs font-medium">© 2026 Sosis KUI – Hak Cipta Dilindungi</p>
+        </div>
+      </footer>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-4px_20px_rgba(0,0,0,0.1)] p-4 px-6 z-40 flex justify-between items-center animate-fade-in-up">
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-gray-500 mb-0.5">Total Keranjang</span>
+          <span className="text-xl font-black text-orange-600 leading-none">Rp {cartTotal.toLocaleString('id-ID')}</span>
+        </div>
+        <button 
+          onClick={() => setIsCartOpen(true)}
+          className="bg-gradient-to-r from-orange-500 to-pink-500 text-white px-6 py-3 rounded-2xl font-black shadow-lg shadow-orange-500/30 flex items-center gap-3 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+        >
+          <ShoppingCart size={20} /> 
+          Lihat Keranjang
+          {totalItems > 0 && (
+            <span className="bg-white text-orange-600 w-6 h-6 rounded-full text-xs flex items-center justify-center font-black">
+              {totalItems}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {isCartOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[60] flex justify-end backdrop-blur-sm">
+          <div className="bg-white w-full max-w-md h-full shadow-2xl flex flex-col animate-fade-in border-l border-orange-100 relative">
+            <div className="p-5 border-b flex justify-between items-center bg-gradient-to-r from-orange-50 to-pink-50">
+              <h2 className="font-black text-xl flex items-center gap-2 text-gray-800">
+                <ShoppingCart className="text-orange-500" /> Keranjang Anda
+              </h2>
+              <button onClick={() => setIsCartOpen(false)} className="text-gray-400 hover:text-red-500 font-bold p-2 bg-white rounded-full shadow-sm cursor-pointer">✕</button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-5 bg-gray-50/50">
+              {cart.length === 0 ? (
+                <div className="text-center text-gray-400 mt-20 flex flex-col items-center gap-3">
+                  <ShoppingCart size={48} className="opacity-20"/>
+                  <p className="font-bold">Keranjang masih kosong.</p>
+                </div>
+              ) : (
+                cart.map(item => (
+                  <div key={item.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 animate-fade-in">
+                    <div className="flex gap-3 mb-3">
+                      <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0 bg-gray-50 border border-gray-100">
+                         <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-sm text-gray-800 leading-tight truncate">{item.name}</h4>
+                        <div className="text-orange-600 text-sm font-black mt-1">Rp {item.price.toLocaleString('id-ID')} <span className="text-gray-400 text-xs font-medium">/ pcs</span></div>
+                      </div>
+                      <div className="flex flex-col items-end justify-between">
+                         <button onClick={() => removeFromCart(item.id)} className="p-1.5 text-red-300 hover:text-red-500 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between bg-gray-50 rounded-xl p-2 border border-gray-100">
+                      <span className="text-xs font-bold text-gray-500 pl-2">Jumlah:</span>
+                      <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 p-0.5 shadow-sm">
+                        <button onClick={() => updateCartQty(item.id, -1)} className="p-1.5 hover:bg-gray-50 rounded text-gray-600 cursor-pointer"><Minus size={14}/></button>
+                        <span className="w-6 text-center text-sm font-black">{item.qty}</span>
+                        <button onClick={() => updateCartQty(item.id, 1)} className="p-1.5 hover:bg-gray-50 rounded text-gray-600 cursor-pointer"><Plus size={14}/></button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+
+              {cart.length > 0 && (
+                <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm space-y-5">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-1.5"><Edit3 size={16} className="text-orange-500"/> Pilih Bumbu Pesanan (Bisa Mix)</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {BUMBU_OPTIONS.map(b => (
+                        <label key={b} className={`flex items-center gap-2 p-3 border-2 rounded-xl cursor-pointer transition-colors ${orderBumbu.includes(b) ? 'bg-orange-50 border-orange-400 shadow-sm' : 'bg-white border-gray-100 hover:border-orange-200'}`}>
+                          <input 
+                            type="checkbox" 
+                            checked={orderBumbu.includes(b)} 
+                            onChange={() => setOrderBumbu(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b])} 
+                            className="w-4 h-4 text-orange-500 rounded border-gray-300 focus:ring-orange-400 cursor-pointer" 
+                          />
+                          <span className={`text-sm font-bold ${orderBumbu.includes(b) ? 'text-orange-700' : 'text-gray-600'}`}>{b}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Catatan (Opsional)</label>
+                    <textarea 
+                      className="w-full border border-gray-200 focus:border-orange-400 rounded-xl p-3 outline-none text-sm transition-colors"
+                      placeholder="Contoh: Bumbunya yang banyak ya, pedas..."
+                      rows="2"
+                      value={catatanPesanan}
+                      onChange={(e) => setCatatanPesanan(e.target.value)}
+                    ></textarea>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Metode Pembayaran</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button 
+                        onClick={() => setPaymentMethod('cod')}
+                        className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all cursor-pointer ${paymentMethod === 'cod' ? 'border-orange-500 bg-orange-50 text-orange-700 shadow-sm' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                      >
+                        <Banknote size={24} />
+                        <span className="text-xs font-bold">Bayar di Tempat</span>
+                      </button>
+                      <button 
+                        onClick={() => setPaymentMethod('qris')}
+                        className={`flex flex-col items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all cursor-pointer ${paymentMethod === 'qris' ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                      >
+                        <CreditCard size={24} />
+                        <span className="text-xs font-bold">Bayar via QRIS</span>
+                      </button>
+                    </div>
+
+                    {paymentMethod === 'qris' && (
+                      <div className="mt-4 bg-blue-50 p-3 rounded-xl border border-blue-100 text-center animate-fade-in">
+                        <p className="text-xs text-blue-800 font-medium mb-2">Scan kode QR di bawah untuk membayar. Ketuk gambar untuk memperbesar/download.</p>
+                        <img 
+                          src={QRIS_IMG} 
+                          alt="QRIS Sosis KUI" 
+                          className="w-32 h-32 object-contain mx-auto rounded-xl border-2 border-white shadow-md cursor-pointer hover:scale-105 transition-transform" 
+                          onClick={() => setShowQrZoom(true)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-5 border-t bg-white shadow-[0_-4px_15px_rgba(0,0,0,0.02)] z-10 pb-8">
+              <div className="flex justify-between mb-4 text-lg">
+                <span className="font-bold text-gray-600">Total Pembayaran:</span>
+                <span className="font-black text-orange-600 text-xl">Rp {cartTotal.toLocaleString('id-ID')}</span>
+              </div>
+              <button 
+                onClick={handleCheckout}
+                disabled={cart.length === 0}
+                className="w-full bg-gradient-to-r from-orange-500 to-pink-500 text-white py-4 rounded-xl font-black shadow-xl shadow-orange-500/20 disabled:opacity-50 disabled:shadow-none hover:opacity-95 transition-all active:scale-[0.98] cursor-pointer"
+              >
+                Pesan Sekarang
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showQrZoom && (
+        <div className="fixed inset-0 bg-black/90 z-[100] flex flex-col items-center justify-center p-4 backdrop-blur-md">
+           <button 
+             onClick={() => setShowQrZoom(false)} 
+             className="absolute top-4 right-4 sm:top-8 sm:right-8 text-white bg-white/20 hover:bg-red-500 rounded-full w-12 h-12 flex items-center justify-center cursor-pointer transition-colors text-xl font-black shadow-lg z-50"
+             title="Tutup"
+           >
+             ✕
+           </button>
+           <img src={QRIS_IMG} alt="QRIS Besar" className="w-full max-w-md rounded-2xl shadow-2xl mb-6" />
+           <p className="text-white mb-4 text-center font-medium max-w-sm">Scan atau Screenshot kode QR ini untuk menyelesaikan pembayaran dengan M-Banking / E-Wallet Anda.</p>
+           <a 
+              href={QRIS_IMG} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              download 
+              className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl flex items-center gap-2 transition-colors cursor-pointer shadow-lg"
+            >
+              <Download size={20} /> Download QRIS
+           </a>
+        </div>
+      )}
+
+      {deleteMyReviewModal.isOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white p-7 rounded-3xl w-full max-w-sm shadow-2xl animate-fade-in-down border border-white/20 relative">
+            <h3 className="text-xl font-black mb-2 text-gray-800 flex items-center gap-2">
+              <AlertTriangle className="text-red-500"/> Hapus Ulasan
+            </h3>
+            <p className="text-sm font-medium text-gray-500 mb-6">Yakin ingin menghapus ulasan Anda secara permanen?</p>
+            
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setDeleteMyReviewModal({isOpen: false, reviewId: null})} className="flex-1 py-3 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-colors cursor-pointer">Batal</button>
+              <button onClick={confirmDeleteMyReview} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-black shadow-lg shadow-red-500/30 hover:bg-red-600 transition-colors cursor-pointer active:scale-95">Ya, Hapus</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==========================================
+// SELLER PORTAL
+// ==========================================
+function SellerPortal({ products, orders, reviews, recaps, view, setView, onLogout, showNotif }) {
+  
+  const [processModal, setProcessModal] = useState({ isOpen: false, orderId: null });
+  const [estTime, setEstTime] = useState(15);
+  const [deleteOrderModal, setDeleteOrderModal] = useState({ isOpen: false, orderId: null });
+  const [deleteReviewModal, setDeleteReviewModal] = useState({ isOpen: false, reviewId: null });
+  const [deleteRecapModal, setDeleteRecapModal] = useState({ isOpen: false, recapId: null });
+
+  const openProcessModal = (orderId) => {
+    setProcessModal({ isOpen: true, orderId });
+    setEstTime(15); 
+  };
+
+  const submitProcessStatus = async () => {
+    if (!processModal.orderId) return;
+    
+    try {
+      await updateDoc(doc(db, PUBLIC_PATH, 'orders', processModal.orderId), { 
+        status: 'Diproses',
+        estimatedTime: estTime
+      });
+      showNotif(`Status pesanan diperbarui menjadi Diproses`);
+      setProcessModal({ isOpen: false, orderId: null });
+    } catch (err) {
+      console.error("Gagal memproses pesanan:", err);
+      showNotif('Gagal mengupdate status', 'error');
+    }
+  };
+
+  const handleUpdateStatus = async (orderId, newStatus) => {
+    try {
+      await updateDoc(doc(db, PUBLIC_PATH, 'orders', orderId), { 
+        status: newStatus
+      });
+      showNotif(`Status pesanan diperbarui menjadi ${newStatus}`);
+    } catch (err) {
+      console.error(err);
+      showNotif('Gagal mengupdate status', 'error');
+    }
+  };
+
+  const openDeleteOrderModal = (orderId) => {
+    setDeleteOrderModal({ isOpen: true, orderId });
+  };
+
+  const confirmDeleteOrder = async () => {
+    if (!deleteOrderModal.orderId) return;
+    try {
+      await deleteDoc(doc(db, PUBLIC_PATH, 'orders', deleteOrderModal.orderId));
+      showNotif('Riwayat pesanan berhasil dihapus');
+      setDeleteOrderModal({ isOpen: false, orderId: null });
+    } catch (err) {
+      showNotif('Gagal menghapus riwayat', 'error');
+    }
+  };
+
+  const openDeleteReviewModal = (reviewId) => {
+    setDeleteReviewModal({ isOpen: true, reviewId });
+  };
+
+  const confirmDeleteReview = async () => {
+    if (!deleteReviewModal.reviewId) return;
+    try {
+      await deleteDoc(doc(db, PUBLIC_PATH, 'reviews', deleteReviewModal.reviewId));
+      showNotif('Ulasan berhasil dihapus', 'success');
+      setDeleteReviewModal({ isOpen: false, reviewId: null });
+    } catch (err) {
+      showNotif('Gagal menghapus ulasan', 'error');
+    }
+  };
+
+  const openDeleteRecapModal = (recapId) => {
+    setDeleteRecapModal({ isOpen: true, recapId });
+  };
+
+  const confirmDeleteRecap = async () => {
+    if (!deleteRecapModal.recapId) return;
+    try {
+      await deleteDoc(doc(db, PUBLIC_PATH, 'recaps', deleteRecapModal.recapId));
+      
+      // Hapus otomatis pesanan selesai (varian paling laku) di hari yang sama dengan rekap
+      const recapDateStr = deleteRecapModal.recapId.replace(/-/g, '/');
+      const ordersToDelete = orders.filter(o => 
+        o.status === 'Selesai' && 
+        new Date(o.timestamp).toLocaleDateString('id-ID') === recapDateStr
+      );
+      
+      for (const order of ordersToDelete) {
+        await deleteDoc(doc(db, PUBLIC_PATH, 'orders', order.id));
+      }
+
+      showNotif('Riwayat rekap dan data penjualannya berhasil dihapus', 'success');
+      setDeleteRecapModal({ isOpen: false, recapId: null });
+    } catch (err) {
+      showNotif('Gagal menghapus riwayat rekap', 'error');
+    }
+  };
+
+  const getWaLink = (order) => {
+    let msg = `*NOTA PESANAN SOSIS KUI*\n`;
+    msg += `-------------------------------------------\n\n`;
+    msg += `Halo kak *${order.buyerName}*,\n`;
+    msg += `Pesanan Anda telah kami terima.\n\n`;
+    msg += `*DETAIL PESANAN:*\n`;
+    
+    order.items.forEach(i => {
+      msg += `- ${i.qty}x ${i.name}\n`;
+    });
+
+    if (order.bumbu && order.bumbu.length > 0) {
+      msg += `\n*Bumbu Pilihan:* ${order.bumbu.join(', ')}\n`;
+    } else {
+      msg += `\n*Bumbu Pilihan:* Tanpa Bumbu\n`;
+    }
+
+    msg += `-------------------------------------------\n`;
+    msg += `*Total Bayar:* Rp ${order.total.toLocaleString('id-ID')}\n`;
+    msg += `*Metode Bayar:* ${order.paymentMethod === 'qris' ? 'QRIS' : 'Bayar di Tempat'}\n`;
+    if (order.catatan) {
+      msg += `*Catatan:* ${order.catatan}\n`;
+    }
+    msg += `-------------------------------------------\n\n`;
+    
+    if (order.status === 'Diproses') {
+      msg += `Status: *Sedang Diproses* 🧑‍🍳\n`;
+      msg += `Estimasi Selesai: *± ${order.estimatedTime} Menit*\n\n`;
+      msg += `Mohon ditunggu ya kak! Terima kasih.`;
+    } else if (order.status === 'Selesai') {
+      msg += `Status: *SELESAI* ✅\n\n`;
+      msg += `Pesanan sudah siap! Terima kasih telah memesan di Sosis KUI.`;
+    } else {
+      msg += `Status: *Menunggu Konfirmasi* ⏳\n\n`;
+      msg += `Kami akan segera memproses pesanan Anda.`;
+    }
+    
+    let formatted = order.buyerPhone.replace(/\D/g, '');
+    if (formatted.startsWith('0')) formatted = '62' + formatted.slice(1);
+    
+    return `https://api.whatsapp.com/send?phone=${formatted}&text=${encodeURIComponent(msg)}`;
+  };
+
+  const renderOrders = () => {
+    const displayOrders = orders; 
+
+    return (
+      <div className="space-y-5 animate-fade-in relative">
+        <h2 className="text-2xl font-black mb-6 flex items-center gap-2 text-gray-800">
+          <Package className="text-orange-500"/> Daftar Pesanan Masuk
+        </h2>
+        {displayOrders.length === 0 && (
+          <div className="bg-white p-8 rounded-2xl text-center shadow-sm border border-gray-100">
+             <Package size={48} className="mx-auto text-gray-300 mb-3"/>
+             <p className="text-gray-500 font-bold">Belum ada pesanan masuk hari ini.</p>
+          </div>
+        )}
+        
+        {displayOrders.map(order => (
+          <div key={order.id} className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100 border-l-[6px] border-l-orange-400 relative hover:shadow-md transition-shadow">
+            <div className="flex flex-col md:flex-row justify-between gap-5">
+              
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="bg-gray-100 text-gray-700 text-xs px-2.5 py-1 rounded-md font-mono font-bold shadow-sm">
+                    {new Date(order.timestamp).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'})}
+                  </span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-black text-white shadow-sm ${
+                    order.status === 'Menunggu' ? 'bg-yellow-500' :
+                    order.status === 'Diproses' ? 'bg-blue-500' : 'bg-green-500'
+                  }`}>
+                    {order.status}
+                  </span>
+                  <span className={`px-2 py-1 rounded-md text-[10px] font-black uppercase shadow-sm border ${
+                    order.paymentMethod === 'qris' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-green-50 text-green-700 border-green-200'
+                  }`}>
+                    {order.paymentMethod === 'qris' ? 'QRIS' : 'COD'}
+                  </span>
+                </div>
+                
+                <h3 className="font-black text-xl text-gray-800 mb-1">{order.buyerName}</h3>
+                <p className="text-gray-600 text-sm flex items-center gap-1.5 mb-4 font-medium">
+                  <Phone size={14} className="text-gray-400"/> {order.buyerPhone}
+                </p>
+
+                {order.catatan && (
+                  <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs p-2.5 rounded-lg mb-4 flex items-start gap-2">
+                    <Edit3 size={14} className="mt-0.5 flex-shrink-0"/> 
+                    <span className="font-bold">Catatan:</span> {order.catatan}
+                  </div>
+                )}
+                
+                <div className="bg-orange-50/50 p-4 rounded-xl border border-orange-100 text-sm mb-2 shadow-inner">
+                  <strong className="block mb-2 text-orange-800 text-sm">Rincian Pesanan:</strong>
+                  {order.items.map((it, idx) => (
+                    <div key={idx} className="flex justify-between border-b border-orange-200/50 py-1.5 last:border-0">
+                      <span className="font-bold text-gray-800">{it.qty}x {it.name}</span>
+                    </div>
+                  ))}
+                  
+                  <div className="mt-2 pt-2 border-t border-orange-200/50">
+                    <span className="font-bold text-gray-700 text-xs">Bumbu Pilihan: </span>
+                    {order.bumbu && order.bumbu.length > 0 ? (
+                      <span className="text-xs text-orange-700 font-bold bg-orange-100/50 px-2 py-0.5 rounded-md inline-block">{order.bumbu.join(', ')}</span>
+                    ) : (
+                      <span className="text-xs text-gray-500 font-medium bg-gray-100 px-2 py-0.5 rounded-md inline-block">Tanpa Bumbu</span>
+                    )}
+                  </div>
+
+                  <div className="font-black text-lg text-orange-600 mt-3 pt-3 border-t border-orange-200">
+                    Total: Rp {order.total.toLocaleString('id-ID')}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col justify-end gap-3 md:min-w-[180px]">
+                {order.status === 'Menunggu' && (
+                  <button onClick={() => openProcessModal(order.id)} className="bg-blue-500 hover:bg-blue-600 text-white py-3 px-4 rounded-xl shadow-md shadow-blue-500/20 transition-all active:scale-95 font-bold cursor-pointer relative z-10">
+                    Proses Pesanan
+                  </button>
+                )}
+                {order.status === 'Diproses' && (
+                  <button onClick={() => handleUpdateStatus(order.id, 'Selesai')} className="bg-green-500 hover:bg-green-600 text-white py-3 px-4 rounded-xl shadow-md shadow-green-500/20 transition-all active:scale-95 font-bold cursor-pointer relative z-10">
+                    Tandai Selesai
+                  </button>
+                )}
+                {order.status === 'Selesai' && (
+                  <button onClick={() => openDeleteOrderModal(order.id)} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 py-3 px-4 rounded-xl transition-all active:scale-95 font-bold flex items-center justify-center gap-2 cursor-pointer relative z-10">
+                    <Trash2 size={16}/> Hapus Riwayat
+                  </button>
+                )}
+
+                <a 
+                  href={getWaLink(order)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-[#25D366] hover:bg-[#1ebd5a] text-white py-3 px-4 rounded-xl shadow-md shadow-[#25D366]/20 transition-all active:scale-95 font-bold flex items-center justify-center gap-2 cursor-pointer relative z-10"
+                >
+                  <MessageCircle size={18} /> Info via WA
+                </a>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {processModal.isOpen && (
+           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+             <div className="bg-white p-7 rounded-3xl w-full max-w-sm shadow-2xl animate-fade-in-down border border-white/20 relative">
+               <button onClick={() => setProcessModal({isOpen: false, orderId: null})} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 bg-gray-100 p-1.5 rounded-full cursor-pointer">✕</button>
+               
+               <h3 className="text-xl font-black mb-2 text-gray-800 flex items-center gap-2">
+                 <Clock className="text-blue-500"/> Estimasi Waktu
+               </h3>
+               <p className="text-sm font-medium text-gray-500 mb-5">Berapa menit pesanan ini akan siap agar pembeli bisa menunggu?</p>
+               
+               <div className="relative mb-6">
+                 <input 
+                   type="number" 
+                   value={estTime} 
+                   onChange={e => setEstTime(Number(e.target.value))}
+                   className="w-full border-2 border-gray-200 rounded-xl px-4 py-3.5 focus:border-blue-500 focus:ring-0 outline-none text-lg font-bold transition-colors"
+                   placeholder="15"
+                 />
+                 <span className="absolute right-4 top-4 text-gray-400 font-bold">Menit</span>
+               </div>
+               
+               <div className="flex justify-end gap-3">
+                 <button onClick={() => setProcessModal({isOpen: false, orderId: null})} className="flex-1 py-3 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-colors cursor-pointer">Batal</button>
+                 <button onClick={submitProcessStatus} className="flex-1 py-3 bg-blue-500 text-white rounded-xl font-black shadow-lg shadow-blue-500/30 hover:bg-blue-600 transition-colors cursor-pointer active:scale-95">Simpan & Proses</button>
+               </div>
+             </div>
+           </div>
+        )}
+
+        {deleteOrderModal.isOpen && (
+           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+             <div className="bg-white p-7 rounded-3xl w-full max-w-sm shadow-2xl animate-fade-in-down border border-white/20 relative">
+               <h3 className="text-xl font-black mb-2 text-gray-800 flex items-center gap-2">
+                 <AlertTriangle className="text-red-500"/> Hapus Riwayat
+               </h3>
+               <p className="text-sm font-medium text-gray-500 mb-6">Yakin ingin menghapus riwayat pesanan ini secara permanen?</p>
+               
+               <div className="flex justify-end gap-3">
+                 <button onClick={() => setDeleteOrderModal({isOpen: false, orderId: null})} className="flex-1 py-3 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-colors cursor-pointer">Batal</button>
+                 <button onClick={confirmDeleteOrder} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-black shadow-lg shadow-red-500/30 hover:bg-red-600 transition-colors cursor-pointer active:scale-95">Ya, Hapus</button>
+               </div>
+             </div>
+           </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderStock = () => {
+    const handleUpdateStock = async (id, newStock) => {
+      const val = Math.max(0, parseInt(newStock) || 0);
+      try {
+        await updateDoc(doc(db, PUBLIC_PATH, 'products', id), { stock: val });
+        showNotif('Stok berhasil diupdate');
+      } catch (e) { showNotif('Gagal update', 'error'); }
+    };
+
+    const handleSetEmpty = async (id) => {
+      try {
+        await updateDoc(doc(db, PUBLIC_PATH, 'products', id), { stock: 0 });
+        showNotif('Stok di set HABIS', 'warning');
+      } catch (e) { showNotif('Gagal update', 'error'); }
+    };
+
+    return (
+      <div className="animate-fade-in">
+        <h2 className="text-2xl font-black mb-6 flex items-center gap-2 text-gray-800">
+          <AlertTriangle className="text-orange-500"/> Manajemen Stok Real-time
+        </h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[500px]">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-100 text-gray-600">
+                  <th className="p-4 font-bold">Produk</th>
+                  <th className="p-4 font-bold">Harga</th>
+                  <th className="p-4 w-32 font-bold">Stok Saat Ini</th>
+                  <th className="p-4 text-center font-bold">Aksi Cepat</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map(p => (
+                  <tr key={p.id} className="border-b border-gray-50 last:border-0 hover:bg-orange-50/30 transition-colors">
+                    <td className="p-4 flex items-center gap-3">
+                      <div className="w-12 h-12 bg-gray-100 rounded-lg overflow-hidden border border-gray-200 flex-shrink-0 shadow-sm">
+                         <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
+                      </div>
+                      <span className="font-bold text-gray-800">{p.name}</span>
+                    </td>
+                    <td className="p-4 font-bold text-gray-600">Rp {p.price.toLocaleString('id-ID')}</td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        <input 
+                          type="number" 
+                          value={p.stock}
+                          onChange={(e) => handleUpdateStock(p.id, e.target.value)}
+                          className={`w-20 px-3 py-1.5 font-bold rounded-lg border-2 outline-none transition-colors ${p.stock <= 5 ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500' : 'border-gray-200 focus:border-orange-400'}`}
+                        />
+                      </div>
+                    </td>
+                    <td className="p-4 text-center">
+                      <button 
+                        onClick={() => handleSetEmpty(p.id)}
+                        disabled={p.stock === 0}
+                        className="text-xs bg-red-100 text-red-700 px-3 py-2 rounded-lg hover:bg-red-200 disabled:opacity-40 disabled:hover:bg-red-100 font-bold cursor-pointer transition-colors"
+                      >
+                        Set Habis
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderReviews = () => {
+    return (
+      <div className="animate-fade-in space-y-5">
+        <h2 className="text-2xl font-black mb-6 flex items-center gap-2 text-gray-800">
+          <Star className="text-orange-500"/> Kelola Ulasan Pelanggan
+        </h2>
+        {reviews.length === 0 ? (
+          <div className="bg-white p-8 rounded-2xl text-center shadow-sm border border-gray-100">
+             <Star size={48} className="mx-auto text-gray-300 mb-3"/>
+             <p className="text-gray-500 font-bold">Belum ada ulasan dari pelanggan.</p>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            {reviews.map(rev => (
+              <div key={rev.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col sm:flex-row justify-between gap-4 items-start sm:items-center hover:shadow-md transition-shadow">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-bold text-gray-800">{rev.buyerName}</span>
+                    <span className="text-xs text-gray-400 font-medium">{new Date(rev.timestamp).toLocaleDateString('id-ID')}</span>
+                  </div>
+                  <div className="flex mb-2">
+                    {[1,2,3,4,5].map(star => (
+                      <Star key={star} size={14} className={star <= rev.rating ? "text-orange-500 fill-orange-500" : "text-gray-200"} />
+                    ))}
+                  </div>
+                  <p className="text-sm text-gray-600 italic">"{rev.description}"</p>
+                </div>
+                <button 
+                  onClick={() => openDeleteReviewModal(rev.id)} 
+                  className="bg-red-50 text-red-500 hover:bg-red-100 hover:text-red-600 p-2.5 rounded-xl transition-colors cursor-pointer flex-shrink-0"
+                  title="Hapus Ulasan"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {deleteReviewModal.isOpen && (
+           <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+             <div className="bg-white p-7 rounded-3xl w-full max-w-sm shadow-2xl animate-fade-in-down border border-white/20 relative">
+               <h3 className="text-xl font-black mb-2 text-gray-800 flex items-center gap-2">
+                 <AlertTriangle className="text-red-500"/> Hapus Ulasan
+               </h3>
+               <p className="text-sm font-medium text-gray-500 mb-6">Yakin ingin menghapus ulasan pelanggan ini?</p>
+               
+               <div className="flex justify-end gap-3">
+                 <button onClick={() => setDeleteReviewModal({isOpen: false, reviewId: null})} className="flex-1 py-3 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-colors cursor-pointer">Batal</button>
+                 <button onClick={confirmDeleteReview} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-black shadow-lg shadow-red-500/30 hover:bg-red-600 transition-colors cursor-pointer active:scale-95">Ya, Hapus</button>
+               </div>
+             </div>
+           </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderDashboard = () => {
+    const completedOrders = orders.filter(o => o.status === 'Selesai');
+    
+    // Gunakan tanggal yang konsisten untuk perhitungan hari ini
+    const todayObj = new Date();
+    const today = todayObj.toLocaleDateString('id-ID'); // "22/3/2026"
+    
+    // Format lengkap untuk judul UI
+    const todayStr = new Intl.DateTimeFormat('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).format(todayObj);
+    
+    const todayOrders = completedOrders.filter(o => new Date(o.timestamp).toLocaleDateString('id-ID') === today);
+    const todayRevenue = todayOrders.reduce((sum, o) => sum + o.total, 0);
+
+    const variantCounts = {};
+    todayOrders.forEach(order => {
+      order.items.forEach(item => {
+        variantCounts[item.name] = (variantCounts[item.name] || 0) + item.qty;
+      });
+    });
+
+    const popularData = Object.keys(variantCounts).map(name => ({
+      name,
+      count: variantCounts[name]
+    })).sort((a, b) => b.count - a.count);
+
+    const maxCount = popularData.length > 0 ? popularData[0].count : 1;
+
+    const handleSaveRecapToDb = async () => {
+      const recapId = today.replace(/\//g, '-');
+      try {
+        await setDoc(doc(db, PUBLIC_PATH, 'recaps', recapId), {
+          date: todayStr, // Simpan tanggal dengan format lengkap
+          revenue: todayRevenue,
+          ordersCount: todayOrders.length,
+          itemsCount: popularData.reduce((sum, item) => sum + item.count, 0),
+          popular: popularData.slice(0, 3).map(p => `${p.name} (${p.count})`),
+          timestamp: Date.now()
+        });
+        showNotif('Rekap berhasil disimpan ke aplikasi!', 'success');
+      } catch (err) {
+        console.error(err);
+        showNotif('Gagal menyimpan rekap ke database', 'error');
+      }
+    };
+
+    const handleDownloadRecap = () => {
+      let content = `REKAP PENJUALAN SOSIS KUI\n`;
+      content += `Tanggal: ${todayStr}\n`;
+      content += `-------------------------------------------\n\n`;
+      content += `TOTAL PENDAPATAN : Rp ${todayRevenue.toLocaleString('id-ID')}\n`;
+      content += `TOTAL PESANAN    : ${todayOrders.length} Pesanan\n`;
+      content += `TOTAL ITEM TERJUAL: ${popularData.reduce((sum, item) => sum + item.count, 0)} Pcs\n\n`;
+      content += `-------------------------------------------\n`;
+      content += `VARIAN PALING LAKU HARI INI:\n`;
+      if (popularData.length === 0) {
+        content += `- Belum ada data penjualan\n`;
+      } else {
+        popularData.forEach((item, idx) => {
+          content += `${idx + 1}. ${item.name} (${item.count} terjual)\n`;
+        });
+      }
+      content += `\n-------------------------------------------\n`;
+      content += `* Laporan diunduh secara otomatis dari Portal Penjual Sosis KUI.`;
+
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Rekap_Sosis_KUI_${today.replace(/\//g, '-')}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      showNotif('Laporan rekap penjualan berhasil diunduh!', 'success');
+    };
+
+    return (
+      <div className="animate-fade-in space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+          <h2 className="text-2xl font-black flex items-center gap-2 text-gray-800">
+            <TrendingUp className="text-orange-500"/> Penjualan Hari Ini <span className="text-sm font-bold text-gray-400 mt-1 ml-1">({todayStr})</span>
+          </h2>
+          <div className="flex gap-2 w-full sm:w-auto">
+            <button 
+              onClick={handleSaveRecapToDb}
+              className="bg-green-500 hover:bg-green-600 text-white font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 shadow-md shadow-green-500/20 transition-all active:scale-95 cursor-pointer flex-1 sm:flex-none text-sm"
+              title="Simpan Laporan ke Aplikasi"
+            >
+              <Save size={18} /> Simpan Data
+            </button>
+            <button 
+              onClick={handleDownloadRecap}
+              className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 transition-all active:scale-95 cursor-pointer flex-1 sm:flex-none text-sm"
+              title="Download File Txt"
+            >
+              <Download size={18} /> Unduh (.txt)
+            </button>
+          </div>
+        </div>
+
+        {/* 3 Kartu Desain Baru (Total Pesanan, Total Penjualan, Item Terjual) */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-orange-50/80 rounded-2xl p-6 text-center shadow-sm border border-orange-100 flex flex-col items-center justify-center transition-transform hover:scale-[1.02]">
+            <div className="text-3xl font-black text-orange-600 mb-1">{todayOrders.length}</div>
+            <div className="text-sm font-bold text-gray-500">Total Pesanan</div>
+          </div>
+          
+          <div className="bg-green-50/80 rounded-2xl p-6 text-center shadow-sm border border-green-100 flex flex-col items-center justify-center transition-transform hover:scale-[1.02]">
+            <div className="text-3xl font-black text-green-600 mb-1">Rp {todayRevenue.toLocaleString('id-ID')}</div>
+            <div className="text-sm font-bold text-gray-500">Total Penjualan</div>
+          </div>
+          
+          <div className="bg-blue-50/80 rounded-2xl p-6 text-center shadow-sm border border-blue-100 flex flex-col items-center justify-center transition-transform hover:scale-[1.02]">
+            <div className="text-3xl font-black text-blue-600 mb-1">{popularData.reduce((sum, item) => sum + item.count, 0)}</div>
+            <div className="text-sm font-bold text-gray-500">Item Terjual</div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+          <h3 className="text-lg font-black mb-6 text-gray-800 flex items-center gap-2">
+            <BarChart3 className="text-gray-400"/> Varian Paling Laku Hari Ini
+          </h3>
+          
+          <div className="space-y-5">
+            {popularData.length === 0 ? (
+              <p className="text-gray-400 italic font-medium text-center py-4">Belum ada data penjualan hari ini.</p>
+            ) : (
+              popularData.map((item, index) => (
+                <div key={index} className="relative">
+                  <div className="flex justify-between text-sm mb-1.5">
+                    <span className="font-bold text-gray-700">{item.name}</span>
+                    <span className="font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">{item.count} terjual</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden shadow-inner">
+                    <div 
+                      className="bg-gradient-to-r from-orange-400 to-pink-500 h-3 rounded-full transition-all duration-1000 ease-out"
+                      style={{ width: `${(item.count / maxCount) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* RIWAYAT REKAP TERSIMPAN */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 mt-8">
+          <h3 className="text-lg font-black mb-6 text-gray-800 flex items-center gap-2">
+            <Save className="text-gray-400"/> Riwayat Rekap Tersimpan
+          </h3>
+          <div className="space-y-4">
+            {!recaps || recaps.length === 0 ? (
+              <p className="text-gray-400 italic font-medium text-center py-4">Belum ada riwayat rekap yang disimpan.</p>
+            ) : (
+              recaps.map(rcp => (
+                <div key={rcp.id} className="p-4 rounded-xl border border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between gap-4 hover:shadow-md transition-shadow">
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-1">{rcp.date}</h4>
+                    <p className="text-xs text-gray-500 font-medium mb-2">{rcp.ordersCount} Pesanan • {rcp.itemsCount} Item Terjual</p>
+                    <div className="flex flex-wrap gap-1">
+                      {rcp.popular && rcp.popular.map((pop, idx) => (
+                        <span key={idx} className="bg-orange-100 text-orange-700 text-[10px] px-2 py-0.5 rounded font-bold">{pop}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end justify-between text-right">
+                    <div>
+                      <div className="text-xs text-gray-500 font-medium mb-1">Pendapatan</div>
+                      <div className="font-black text-orange-600">Rp {rcp.revenue?.toLocaleString('id-ID')}</div>
+                    </div>
+                    <button 
+                      onClick={() => openDeleteRecapModal(rcp.id)}
+                      className="mt-3 p-1.5 text-red-400 hover:text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors cursor-pointer"
+                      title="Hapus Rekap"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {deleteRecapModal.isOpen && (
+          <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white p-7 rounded-3xl w-full max-w-sm shadow-2xl animate-fade-in-down border border-white/20 relative">
+              <h3 className="text-xl font-black mb-2 text-gray-800 flex items-center gap-2">
+                <AlertTriangle className="text-red-500"/> Hapus Rekap
+              </h3>
+              <p className="text-sm font-medium text-gray-500 mb-6">Yakin ingin menghapus riwayat rekap ini beserta data pesanannya secara permanen?</p>
+              
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setDeleteRecapModal({isOpen: false, recapId: null})} className="flex-1 py-3 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition-colors cursor-pointer">Batal</button>
+                <button onClick={confirmDeleteRecap} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-black shadow-lg shadow-red-500/30 hover:bg-red-600 transition-colors cursor-pointer active:scale-95">Ya, Hapus</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row min-h-screen bg-gray-50/50">
+      <aside className="w-full md:w-64 bg-white shadow-xl shadow-gray-200/50 flex flex-col z-40 relative">
+        <div className="p-6 flex items-center gap-3 border-b border-gray-100 justify-center md:justify-start">
+          <img src={LOGO_MAIN} alt="Logo" className="h-10 drop-shadow-sm" />
+          <span className="font-black text-xl bg-clip-text text-transparent bg-gradient-to-r from-pink-500 to-orange-500">Portal Penjual</span>
+        </div>
+        
+        <nav className="p-4 flex flex-row md:flex-col gap-2 overflow-x-auto hide-scrollbar">
+          <button 
+            onClick={() => setView('seller-orders')}
+            className={`flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all whitespace-nowrap font-bold cursor-pointer ${view === 'seller-orders' ? 'bg-orange-100 text-orange-700 shadow-inner' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'}`}
+          >
+            <Package size={20}/> <span className="hidden md:inline">Daftar Pesanan</span>
+            {orders.filter(o=>o.status==='Menunggu').length > 0 && (
+              <span className="ml-auto bg-red-500 text-white text-xs px-2 py-0.5 rounded-full shadow-sm animate-pulse">Baru</span>
+            )}
+          </button>
+          <button 
+            onClick={() => setView('seller-stock')}
+            className={`flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all whitespace-nowrap font-bold cursor-pointer ${view === 'seller-stock' ? 'bg-orange-100 text-orange-700 shadow-inner' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'}`}
+          >
+            <AlertTriangle size={20}/> <span className="hidden md:inline">Atur Stok</span>
+          </button>
+          <button 
+            onClick={() => setView('seller-dashboard')}
+            className={`flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all whitespace-nowrap font-bold cursor-pointer ${view === 'seller-dashboard' ? 'bg-orange-100 text-orange-700 shadow-inner' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'}`}
+          >
+            <TrendingUp size={20}/> <span className="hidden md:inline">Rekap Penjualan</span>
+          </button>
+          <button 
+            onClick={() => setView('seller-reviews')}
+            className={`flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all whitespace-nowrap font-bold cursor-pointer ${view === 'seller-reviews' ? 'bg-orange-100 text-orange-700 shadow-inner' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'}`}
+          >
+            <Star size={20}/> <span className="hidden md:inline">Ulasan Pelanggan</span>
+          </button>
+        </nav>
+
+        <div className="mt-auto p-4 border-t border-gray-100 hidden md:block">
+          <button onClick={onLogout} className="flex items-center justify-center gap-2 w-full px-4 py-3 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl transition-colors font-bold cursor-pointer">
+            <LogOut size={20}/> Keluar
+          </button>
+        </div>
+      </aside>
+
+      <main className="flex-1 p-4 md:p-8 overflow-y-auto w-full max-w-5xl mx-auto">
+        <div className="md:hidden flex justify-between items-center mb-6 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+          <h1 className="font-black text-lg text-gray-800">
+            {view === 'seller-orders' ? 'Pesanan Masuk' : view === 'seller-stock' ? 'Manajemen Stok' : view === 'seller-dashboard' ? 'Dashboard' : 'Ulasan Pelanggan'}
+          </h1>
+          <button onClick={onLogout} className="p-2 text-red-500 bg-red-50 rounded-lg cursor-pointer hover:bg-red-100 transition-colors">
+            <LogOut size={20}/>
+          </button>
+        </div>
+
+        {view === 'seller-orders' && renderOrders()}
+        {view === 'seller-stock' && renderStock()}
+        {view === 'seller-dashboard' && renderDashboard()}
+        {view === 'seller-reviews' && renderReviews()}
+
+        <footer className="mt-16 border-t border-gray-200 pt-10 pb-6">
+          <div className="max-w-4xl mx-auto px-4 flex flex-col items-center text-center">
+            <h4 className="text-gray-500 font-bold text-sm tracking-widest mb-4 uppercase">DIDUKUNG OLEH:</h4>
+            <div className="flex items-center gap-6 justify-center mb-8">
+              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm p-2 border border-gray-100">
+                <img src={LOGO_ISTTS} alt="ISTTS Logo" className="w-full h-full object-contain" />
+              </div>
+              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm p-2 border border-gray-100">
+                <img src={LOGO_MBD} alt="MBD Logo" className="w-full h-full object-contain" />
+              </div>
+            </div>
+
+            <h4 className="text-gray-500 font-medium text-sm mb-3">Hubungi Kami:</h4>
+            <div className="flex flex-col sm:flex-row gap-4 mb-8">
+              <a href="https://api.whatsapp.com/send?phone=6285102203195" target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[#25D366]/10 text-[#128C7E] font-bold px-6 py-3 rounded-full hover:bg-[#25D366]/20 transition border border-[#25D366]/30 shadow-sm cursor-pointer">
+                <MessageCircle size={20} /> Benjiro
+              </a>
+              <a href="https://api.whatsapp.com/send?phone=6281387658835" target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[#25D366]/10 text-[#128C7E] font-bold px-6 py-3 rounded-full hover:bg-[#25D366]/20 transition border border-[#25D366]/30 shadow-sm cursor-pointer">
+                <MessageCircle size={20} /> Echa
+              </a>
+            </div>
+            
+            <p className="text-gray-400 text-xs font-medium">© 2026 Sosis KUI – Hak Cipta Dilindungi</p>
+          </div>
+        </footer>
+      </main>
+    </div>
+  );
+}
